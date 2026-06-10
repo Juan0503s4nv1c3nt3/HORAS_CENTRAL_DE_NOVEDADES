@@ -9,6 +9,8 @@ import numpy as np
 import os
 import shutil
 import tempfile
+import requests
+import msal
 
 # Mapeo de meses de inglés/número a español
 MESES_MAP = {
@@ -71,6 +73,50 @@ def get_safe_file_source(file_source):
 
     return safe_source, cleanup
 
+
+def get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
+    """
+    Obtiene un access token de Azure AD usando client credentials flow.
+    No requiere login del usuario — usa las credenciales de la app registrada.
+    """
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
+    app = msal.ConfidentialClientApplication(
+        client_id=client_id,
+        client_credential=client_secret,
+        authority=authority
+    )
+    result = app.acquire_token_for_client(
+        scopes=["https://graph.microsoft.com/.default"]
+    )
+    if "access_token" not in result:
+        error_desc = result.get("error_description", "Sin descripción")
+        raise ValueError(f"No se pudo obtener el token de Azure AD: {error_desc}")
+    return result["access_token"]
+
+
+def download_excel_from_onedrive(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    drive_id: str,
+    file_id: str
+) -> io.BytesIO:
+    """
+    Descarga el archivo Excel desde OneDrive/SharePoint usando Microsoft Graph API.
+    Retorna un BytesIO listo para pasarle a load_and_clean_data().
+    """
+    token = get_access_token(tenant_id, client_id, client_secret)
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}/content"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    response = requests.get(url, headers=headers, timeout=30)
+    
+    if response.status_code != 200:
+        raise ValueError(
+            f"Error al descargar el archivo desde OneDrive. "
+            f"Status: {response.status_code} — {response.text[:200]}"
+        )
+    return io.BytesIO(response.content)
 
 def load_and_clean_data(file_source):
     """
